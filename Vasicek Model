@@ -1,0 +1,267 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Dec  7 13:40:18 2020
+
+@author: hsgag
+"""
+import numpy as np
+import scipy.integrate as sciIntegr
+from scipy import integrate
+import matplotlib.pyplot as plt
+from scipy import optimize as opt
+import scipy.stats as stat
+import pandas as pd
+
+class Bond(object):
+    def __init__(self,params, r0):
+        self.mu=params[0]
+        self.sig = params[1]
+        self.kappa =params[2]
+        self.r0=r0
+    
+    def A(self,t,T):
+        pass
+    
+    def B(self,t,T):
+        pass
+    
+    def Exact_ZCB_Price(self,t,T):
+        pass
+    
+    def Sim_Euler(self, M,I,T):
+        pass
+    
+    def SpotRate(self, t, T):
+        price = self.Exact_ZCB_Price(t, T)
+        time  = T - t
+        return (-np.log(price)/time)
+    
+    def StochasticPrice(self,M, I, tau):  
+        # VectorRates is a two dimensional array:
+        # with simulated rates in columns and timesteps rates in rows
+        
+        # we do not need VectorRates and VectorTime at the beginning of the simulation as it is r0        
+        v_times,v_rates = self.Sim_Euler(M, I, tau)
+        
+        No_Sim = v_rates.shape[1]
+         
+        price  = np.zeros(No_Sim)
+        for i in range(No_Sim):    
+            Rates    = v_rates[:,i].T
+            price[i] = np.exp(-(sciIntegr.simps(Rates , v_times)))        
+        
+        RangeUp_Down   = np.sqrt(np.var(price))*1.96 / np.sqrt(No_Sim)
+        Mean = np.mean(price)
+        
+        return Mean,  Mean + RangeUp_Down, Mean - RangeUp_Down
+    
+    
+class Vasicek_Bond(Bond):
+    
+    def __init__(self,params,r0):
+        Bond.__init__(self,params,r0)
+        
+    def B(self, t, T):
+        return (1 - np.exp(-self.kappa*(T-t))) / self.kappa
+    
+    def A(self, t, T): 
+        """This is the formula from Github"""
+        return ((self.mu-(self.sig**2)/(2*(self.kappa**2))) *(self.B(t, T)-(T-t)) \
+                   -  (self.sig**2)/(4*self.kappa)*(self.B(t, T)**2))
+
+
+    def Exact_ZCB_Price(self,t,T):
+        B = self.B(t,T)
+        A = self.A(t,T)
+        return np.exp(A-self.r0*B)
+    
+    def Sim_Euler(self, M, num_trials,tau):
+        
+        dt = tau/M
+        
+        xh = np.zeros((M + 1, num_trials))
+        rates = np.zeros((M + 1, num_trials))
+        times = np.linspace(0, tau, M + 1)
+        xh[0]     = self.r0
+
+        for i in range(1, M + 1):
+            xh[i] = (xh[i - 1] + 
+                  self.kappa * (self.mu - xh[i - 1]) * dt + \
+                  self.sig * np.sqrt(dt) * np.random.standard_normal(I))
+        rates = xh
+        return (times, rates)
+
+    def ExpectedRate(self,t, T):
+        result = self.r0 * np.exp(-self.kappa*(T-t)) + self.mu*(1-np.exp(-self.kappa*(T-t))) 
+        return result
+    
+class Vasicek_Defaultable_Bond(Vasicek_Bond):
+    ###INCOMPLETE
+    
+    def __init__(self,params_sr,params_ir,r0,l0,rho):
+        Bond.__init__(self,params_sr,r0)
+        self.mu_ir = params_ir[0]
+        self.sig_ir= params_ir[1]
+        self.kappa_ir = params_ir[2]
+        self.l0 = 0
+        self.rho = rho
+    
+    def Defaultable_Exact_ZCB_Price(self,t,T):
+        """
+        Need analytical price for Defaultable Bond
+        """
+        #return self.Exact_ZCB_Price*(...)
+        return 
+    
+    def StochasticPrice(self,M, I, tau):  
+        # VectorRates is a two dimensional array:
+        # with simulated rates in columns and timesteps rates in rows
+        
+        # we do not need VectorRates and VectorTime at the beginning of the simulation as it is r0        
+        v_times,s_rates,i_rates = self.Sim_Euler(M, I, tau)
+        
+        No_Sim = s_rates.shape[1]
+         
+        def_free_price  = np.zeros(No_Sim)
+        def_prob = np.zeros(No_Sim)
+        price  = np.zeros(No_Sim)
+        for i in range(No_Sim):    
+            SRates    = s_rates[:,i].T
+            IRates =i_rates[:,i].T
+            def_free_price[i] = np.exp(-(sciIntegr.simps(SRates , v_times)))        
+            def_prob[i] = np.exp(-(sciIntegr.simps(IRates , v_times)))    
+            price[i] = def_free_price[i] * def_prob[i]
+        RangeUp_Down   = np.sqrt(np.var(price))*1.96 / np.sqrt(No_Sim)
+        Mean = np.mean(price)
+        
+        return Mean,  Mean + RangeUp_Down, Mean - RangeUp_Down
+    
+    def Sim_Euler(self,M,num_trials,tau):
+        """
+        2D Simulation for short rate and default process
+        """
+        #s_rates is short rate process
+        #i_rates is def intensity process
+        
+        dt = tau/M
+        
+        xh = np.zeros((M + 1, num_trials))
+        yh = np.zeros((M + 1, num_trials))
+        
+        s_rates = np.zeros((M + 1, num_trials))
+        i_rates = np.zeros((M + 1, num_trials))
+        times = np.linspace(0, tau, M + 1)
+        
+        xh[0] = self.r0
+        yh[0] = self.l0
+        for i in range(1, M + 1):
+            zed1 = np.random.normal()
+            zed2 = np.random.normal()
+            Z1 = zed1
+            Z2 = self.rho*zed1 + np.sqrt(1-self.rho**2)*zed2
+            xh[i] = (xh[i - 1] + 
+                  self.kappa * (self.mu - xh[i - 1]) * dt + \
+                  self.sig * np.sqrt(dt) * Z1)
+            yh[i] = (yh[i - 1] + 
+                  self.kappa_ir * (self.mu_ir - yh[i - 1]) * dt + \
+                  self.sig_ir * np.sqrt(dt) * Z2)
+        s_rates = xh
+        i_rates = yh
+        return (times, s_rates,i_rates)
+        
+def calibrate_sr(data,t):
+    
+    s_y = data[1:]
+    s_x = data[:len(data)-1]
+    
+    n =len(data)
+    dt = 1/252
+    
+    sx = sum(s_x)
+    sy = sum(s_y)
+    sxx = sum(s_x*s_x)
+    syy = sum(s_y*s_y)
+    sxy = sum(s_x*s_y)
+    
+    a = (n*sxy -sx*sy)/(n*sxx - sx*sx)
+    b = (sy - a*sx)/n
+
+    sde = np.sqrt((n*syy - sy*sy - a*(n*sxy - sx*sy))/(n*(n-2)))
+    res_lambdy = -np.log(a)/dt
+    res_mu = b/(1-a)
+    res_sigma = sde*np.sqrt(-2*np.log(a)/(dt*(1-a**2)))
+    
+    
+    
+    return [res_mu,res_sigma, res_lambdy]
+
+
+
+
+r0    = 0.02 # current level of rates
+kappa = 3.0  # speed of convergence
+mu = 0.05 # long term rate
+sigma = 0.01 # vol    
+
+params = [mu,sigma,kappa]
+   # maturity of the ZCB
+
+vasi = Vasicek_Bond(params,r0)
+    
+
+rates_filename = 'Treasury Yield.xlsx'
+rates = pd.read_excel(rates_filename)
+rates.index = rates['Date']
+
+rates = rates.iloc[:,1:]
+rates= rates/100
+taus = [1/12,2/12,3/12,6/12,1,2,3,5,7,10,20,30]
+
+res_params = np.zeros((len(taus),3))
+
+for i in range(len(taus)):
+    t = taus[i]
+    res_params[i] = calibrate_sr(rates.iloc[:,i].values,t)
+    vasi = Vasicek_Bond(res_params[i],r0)
+    print(vasi.ExpectedRate(0,t))
+    
+"""
+I = 100    # no. of simulations
+taus = np.linspace(.25,10,35)
+
+res_params = np.zeros((len(taus),3))
+for i in range(len(taus)):
+    cal_params = np.zeros((I,3))
+    t = taus[i]
+    M = int(252*t) # trading day per annum
+    vasi = Vasicek_Bond(params,r0)
+    model_p = vasi.Exact_ZCB_Price(0,t)
+    rand_data = vasi.Sim_Euler(M,I,t)[1]
+    for j in range(I):
+        cal_params[j] = calibrate_sr(rand_data[:,j],t,M)
+    res_params[i] = np.mean(cal_params,0)
+
+plt.plot(taus,res_params[:,2])
+
+"""
+
+#bounds = ((0,None),(0,None),(0,None))
+#
+#optim = opt.minimize(vas_obj_fun,params, args = (price,tau), bounds = bounds, method = 'SLSQP')
+#print(optim)
+#
+#vasi2 = Vasicek_Bond(optim.x,r0)
+#print(vasi2.Exact_ZCB_Price(0, tau))
+
+#print("Default-Free BOND")
+#print("the MC price is        :", np.round(vals[0],4))
+#print("the MC price+1.96sd is :", np.round(vals[1],4))
+#print("the MC price-1.96sd is :", np.round(vals[2],4))
+#print("the Analytic price is  :" , np.round(vasicek.Exact_ZCB_Price(0,tau),4))
+#
+#def_vasicek = Vasicek_Defaultable_Bond(params,params,r0,r0,-.5)
+#vals = def_vasicek.StochasticPrice(M,I,tau)
+#print("Defaultable BOND")
+#print("the MC price is        :", np.round(vals[0],4))
+#print("the MC price+1.96sd is :", np.round(vals[1],4))
+#print("the MC price-1.96sd is :", np.round(vals[2],4))
